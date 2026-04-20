@@ -3,4 +3,5 @@ __pycache__/
 *.pyc
 data/
 .env
+.env.swp
 *.log

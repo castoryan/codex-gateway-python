@@ -5,51 +5,52 @@
 - 用一个上游 Codex / OpenAI 账号统一出网
 - 给多个用户签发独立 API Key
 - 支持 API Key 创建 / 删除 / 启停 / token 统计
-- 支持 **OpenClaw 风格手动 OAuth 登录**：
-  1. Gateway 生成授权 URL
-  2. 你复制到浏览器登录
-  3. 登录完成后把最终 callback URL 粘贴回来
-  4. Gateway 自己完成 token exchange 并保存登录态
+- 支持 **OpenClaw 风格手动 OAuth 登录**
 - 支持 Docker / Docker Compose 部署
+- 提供一个本地管理员工具：`manage.py`
+
+> 现在推荐的使用方式是：**优先用 `manage.py` 管理**，而不是手敲一堆 `curl`。
 
 ---
 
-## 1. 功能概览
+## 1. 你最需要理解的两件事
 
-### 已支持
+### 1.1 `ADMIN_TOKEN` 是什么？
 
-- 多用户管理
-- 每用户多 API Key
-- API Key 创建 / 删除 / 启用 / 禁用
-- 按 Key 统计：
-  - request_count
-  - prompt_tokens
-  - completion_tokens
-  - total_tokens
-- 代理接口：
-  - `/v1/chat/completions`
-  - `/v1/responses`
-  - `/v1/embeddings`
-- 上游认证模式：
-  - `oauth_manual`
-  - `env_token`
-  - `codex_auth_file`
-  - `auto`
-- OAuth 会话持久化
-- access token / refresh token 持久化
-- access token 到期前自动 refresh（若 refresh_token 可用）
+它就是这个 Gateway 的**管理员口令**。
 
-### 当前最推荐的模式
+它不是平台发给你的，也不是 OpenAI 给的，而是**你自己在 `.env` 里设置的随机字符串**。
+
+比如：
 
 ```env
-UPSTREAM_AUTH_MODE=oauth_manual
+ADMIN_TOKEN=1d84e2f2d0b8f1d5c9ab4f0b4f8a3e2d1a7c5f9e8b6a4c3d2e1f0a9b8c7d6e5
 ```
 
-也就是你前面说的那种：
+如果你要生成一个新的：
 
-- Gateway 给出登录 URL
-- 你自己去浏览器登录
-- 然后把 callback URL 粘回来
+```bash
+python manage.py generate-admin-token
+```
+
+然后把结果写进 `.env`，再重启容器。
+
+### 1.2 为什么现在不用再敲很多 curl 了？
+
+因为我已经给工程补了一个本地管理员工具：
+
+```bash
+python manage.py ...
+```
+
+你可以直接用它：
+
+- 发起上游 OAuth 登录
+- 提交 callback URL
+- 创建用户
+- 创建 API Key
+- 查看用量
+- 查看登录状态
 
 ---
 
@@ -58,410 +59,243 @@ UPSTREAM_AUTH_MODE=oauth_manual
 ```text
 codex-gateway-python/
 ├── app/
-│   ├── main.py
-│   ├── models.py
-│   ├── auth.py
-│   ├── services.py
-│   ├── oauth_manual.py
-│   ├── codex_auth.py
-│   ├── config.py
-│   ├── db.py
-│   ├── schemas.py
-│   ├── oauth_schemas.py
-│   └── admin_auth_schemas.py
 ├── .dockerignore
 ├── .env.example
 ├── .env.docker.example
 ├── .gitignore
 ├── Dockerfile
 ├── docker-compose.yml
+├── manage.py
 ├── README.md
 └── requirements.txt
 ```
 
 ---
 
-## 3. 环境变量说明
+## 3. `manage.py` 能做什么
 
-### 服务基础配置
-
-- `APP_NAME`：应用名
-- `HOST`：监听地址，默认 `0.0.0.0`
-- `PORT`：监听端口，默认 `8080`
-- `ADMIN_TOKEN`：管理员 token
-- `DATABASE_URL`：数据库连接，默认 SQLite
-
-### 上游基础配置
-
-- `UPSTREAM_BASE_URL`：上游 API 地址，默认 `https://api.openai.com`
-- `UPSTREAM_AUTH_MODE`：上游认证模式
-- `UPSTREAM_BEARER_TOKEN`：当 `env_token` 模式时使用
-- `UPSTREAM_TIMEOUT_SECONDS`：上游超时秒数
-
-### OAuth / PKCE 配置
-
-- `OAUTH_AUTHORIZE_URL`
-- `OAUTH_TOKEN_URL`
-- `OAUTH_CLIENT_ID`
-- `OAUTH_CLIENT_SECRET`：可选
-- `OAUTH_REDIRECT_URI`
-- `OAUTH_SCOPE`
-- `OAUTH_AUDIENCE`：可选
-- `OAUTH_SESSION_TTL_MINUTES`
-
-### CLI 桥接兼容配置
-
-- `CODEX_COMMAND`
-- `CODEX_LOGIN_COMMAND`
-- `CODEX_HOME`
-- `CODEX_AUTH_CREDENTIALS_STORE`
-- `CODEX_LOGIN_LOG_FILE`
-
-### 模型白名单
-
-- `DEFAULT_ALLOWED_MODELS`
-
----
-
-## 4. 上游认证模式说明
-
-### 4.1 `oauth_manual`
-
-推荐。
-
-形态就是：
-
-1. `POST /admin/auth/codex/oauth/start`
-2. 返回 `auth_url`
-3. 你去浏览器登录
-4. 把最终回调 URL 粘给 `POST /admin/auth/codex/oauth/complete`
-5. Gateway 保存 token
-
-### 4.2 `env_token`
-
-直接使用环境变量里的：
-
-```env
-UPSTREAM_BEARER_TOKEN=...
-```
-
-优点：
-- 最稳定
-- 最适合正式生产
-
-缺点：
-- 不是网页登录态
-
-### 4.3 `codex_auth_file`
-
-从 `CODEX_HOME/auth.json` 里尝试提取凭证。
-
-优点：
-- 兼容之前的 CLI 登录缓存思路
-
-缺点：
-- 不符合你现在更想要的产品形态
-
-### 4.4 `auto`
-
-优先顺序：
-
-1. `UPSTREAM_BEARER_TOKEN`
-2. 数据库里 OAuth 登录态
-3. `CODEX_HOME/auth.json`
-
----
-
-## 5. 本地直接运行
-
-### 5.1 准备环境
+### 3.1 常用命令
 
 ```bash
-cd codex-gateway-python
-cp .env.example .env
+python manage.py doctor
+python manage.py generate-admin-token
+python manage.py auth-start
+python manage.py auth-complete --session-id 1 --callback-url "http://localhost/callback?code=...&state=..."
+python manage.py auth-status
+python manage.py create-user alice --note "team-a"
+python manage.py list-users
+python manage.py create-key --user-id 1 --name alice-dev
+python manage.py list-keys
+python manage.py disable-key 1
+python manage.py enable-key 1
+python manage.py delete-key 1
+python manage.py usage
 ```
 
-### 5.2 修改关键配置
+### 3.2 在 Docker Compose 里怎么用
 
-最少改这些：
+因为你现在已经 `docker compose up` 了，所以最方便的是这样用：
+
+```bash
+docker compose exec codex-gateway python manage.py doctor
+```
+
+后面的命令都可以照这个模式执行。
+
+> 注意：如果你直接在宿主机执行 `python manage.py ...`，需要宿主机先安装 `requirements.txt` 里的依赖。对你当前场景，**直接在容器里执行是最省事的**。
+
+---
+
+## 4. 我建议你的实际使用顺序
+
+你现在已经把容器跑起来了，所以直接按这个顺序来。
+
+### 第一步：检查配置和当前状态
+
+```bash
+cd /home/ubuntu/codex-gateway-python
+docker compose exec codex-gateway python manage.py doctor
+```
+
+这会告诉你：
+
+- 当前 `UPSTREAM_AUTH_MODE`
+- OAuth 配置有没有填
+- 数据库里有没有用户、Key、OAuth 会话、上游凭证
+
+---
+
+## 5. 怎么登录 Codex / 上游账号
+
+### 前提
+你如果想走你最想要的那种“OpenClaw 风格网页登录”，需要 `.env` 至少已经配置：
 
 ```env
-ADMIN_TOKEN=change_me_admin_token
-UPSTREAM_BASE_URL=https://api.openai.com
 UPSTREAM_AUTH_MODE=oauth_manual
-
-OAUTH_AUTHORIZE_URL=
-OAUTH_TOKEN_URL=
-OAUTH_CLIENT_ID=
+OAUTH_AUTHORIZE_URL=...
+OAUTH_TOKEN_URL=...
+OAUTH_CLIENT_ID=...
 OAUTH_REDIRECT_URI=http://localhost/callback
 ```
 
-### 5.3 安装依赖
+如果这些没填，`auth-start` 会失败。
+
+### 5.1 发起登录
 
 ```bash
-pip install -r requirements.txt
+docker compose exec codex-gateway python manage.py auth-start
 ```
 
-### 5.4 启动
+它会输出一段 JSON，里面有：
 
-```bash
-python -m app.main
-```
+- `session_id`
+- `auth_url`
+- `state`
+- `expires_at`
 
-或：
+同时还会提示你下一步命令。
 
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
-```
+### 5.2 浏览器打开 `auth_url`
 
-### 5.5 健康检查
+把 `auth_url` 整个复制到你自己的浏览器里，完成登录。
 
-```bash
-curl http://127.0.0.1:8080/healthz
-```
+### 5.3 复制最终回调 URL
 
----
-
-## 6. Docker 部署
-
-### 6.1 复制 Docker 环境文件
-
-```bash
-cp .env.docker.example .env
-```
-
-### 6.2 修改 `.env`
-
-至少改这些：
-
-```env
-ADMIN_TOKEN=your_admin_token
-UPSTREAM_AUTH_MODE=oauth_manual
-OAUTH_AUTHORIZE_URL=
-OAUTH_TOKEN_URL=
-OAUTH_CLIENT_ID=
-OAUTH_REDIRECT_URI=http://localhost/callback
-```
-
-如果你想用静态 token：
-
-```env
-UPSTREAM_AUTH_MODE=env_token
-UPSTREAM_BEARER_TOKEN=your_upstream_token
-```
-
-### 6.3 构建镜像
-
-```bash
-docker build -t codex-gateway-python:latest .
-```
-
-### 6.4 启动容器
-
-```bash
-docker run -d \
-  --name codex-gateway-python \
-  --restart unless-stopped \
-  --env-file .env \
-  -p 8080:8080 \
-  -v $(pwd)/data:/app/data \
-  codex-gateway-python:latest
-```
-
-### 6.5 查看日志
-
-```bash
-docker logs -f codex-gateway-python
-```
-
----
-
-## 7. Docker Compose 部署
-
-### 7.1 启动
-
-```bash
-cp .env.docker.example .env
-docker compose up -d --build
-```
-
-### 7.2 查看状态
-
-```bash
-docker compose ps
-```
-
-### 7.3 查看日志
-
-```bash
-docker compose logs -f
-```
-
-### 7.4 停止
-
-```bash
-docker compose down
-```
-
-### 7.5 持久化说明
-
-compose 默认挂载：
-
-- `./data:/app/data`
-
-这里会保存：
-
-- SQLite 数据库
-- 登录日志
-- 运行期数据
-
-如果你还想兼容 `codex_auth_file` 模式，可以自行把宿主机某个绝对路径挂到：
+登录完成后，浏览器会跳到类似：
 
 ```text
-/root/.codex
-```
-
-但对你当前诉求来说，**优先还是 `oauth_manual`**，这样根本不需要依赖宿主机先 `codex login`。
-
----
-
-## 8. OpenClaw 风格 OAuth 登录流程
-
-### 8.1 发起授权
-
-```bash
-curl -X POST http://127.0.0.1:8080/admin/auth/codex/oauth/start \
-  -H 'Authorization: Bearer your_admin_token'
-```
-
-示例返回：
-
-```json
-{
-  "session_id": 1,
-  "auth_url": "https://auth.example.com/oauth/authorize?...",
-  "state": "abc123",
-  "expires_at": "2026-04-20T14:50:00Z",
-  "instructions": "在浏览器打开 auth_url，完成登录后，把最终跳转后的完整 callback URL 粘贴到 /admin/auth/codex/oauth/complete"
-}
-```
-
-### 8.2 浏览器打开 `auth_url`
-
-你自己登录。
-
-### 8.3 复制回调 URL
-
-浏览器最后通常会跳到：
-
-```text
-http://localhost/callback?code=xxx&state=abc123
+http://localhost/callback?code=xxx&state=yyy
 ```
 
 把这个完整 URL 复制出来。
 
-### 8.4 提交 callback URL
+### 5.4 完成登录
 
 ```bash
-curl -X POST http://127.0.0.1:8080/admin/auth/codex/oauth/complete \
-  -H 'Authorization: Bearer your_admin_token' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "session_id": 1,
-    "callback_url": "http://localhost/callback?code=xxx&state=abc123"
-  }'
+docker compose exec codex-gateway python manage.py auth-complete \
+  --session-id 1 \
+  --callback-url "http://localhost/callback?code=xxx&state=yyy"
 ```
 
-### 8.5 查看当前认证状态
+### 5.5 查看登录状态
 
 ```bash
-curl http://127.0.0.1:8080/admin/auth/upstream \
-  -H 'Authorization: Bearer your_admin_token'
+docker compose exec codex-gateway python manage.py auth-status
 ```
 
-### 8.6 查看当前绑定账号信息
+如果成功，你会看到当前已有 `current_credential`。
+
+---
+
+## 6. 怎么创建用户
+
+比如你要创建一个叫 `alice` 的用户：
 
 ```bash
-curl http://127.0.0.1:8080/admin/auth/codex/account \
-  -H 'Authorization: Bearer your_admin_token'
+docker compose exec codex-gateway python manage.py create-user alice --note "team-a"
 ```
 
-### 8.7 登出 / 清除上游登录态
+然后列出用户：
 
 ```bash
-curl -X POST http://127.0.0.1:8080/admin/auth/codex/logout \
-  -H 'Authorization: Bearer your_admin_token'
+docker compose exec codex-gateway python manage.py list-users
+```
+
+你会看到类似：
+
+```json
+[
+  {
+    "id": 1,
+    "name": "alice",
+    "note": "team-a"
+  }
+]
+```
+
+记住这个 `id`。
+
+---
+
+## 7. 怎么生成新的 API Key
+
+比如给 `user_id=1` 创建一个叫 `alice-dev` 的 Key：
+
+```bash
+docker compose exec codex-gateway python manage.py create-key --user-id 1 --name alice-dev
+```
+
+它会输出类似：
+
+```json
+{
+  "id": 1,
+  "user_id": 1,
+  "name": "alice-dev",
+  "api_key": "gtw_xxxxxxxxx",
+  "key_preview": "gtw_xx...xxxx",
+  "enabled": true
+}
+```
+
+### 注意
+`api_key` 明文只会显示这一次，你要自己保存好。
+
+---
+
+## 8. 怎么查看和管理 API Key
+
+### 查看所有 keys
+
+```bash
+docker compose exec codex-gateway python manage.py list-keys
+```
+
+### 禁用 key
+
+```bash
+docker compose exec codex-gateway python manage.py disable-key 1
+```
+
+### 启用 key
+
+```bash
+docker compose exec codex-gateway python manage.py enable-key 1
+```
+
+### 删除 key
+
+```bash
+docker compose exec codex-gateway python manage.py delete-key 1
 ```
 
 ---
 
-## 9. 用户和 API Key 管理
-
-### 创建用户
+## 9. 怎么看 token 用量统计
 
 ```bash
-curl -X POST http://127.0.0.1:8080/admin/users \
-  -H 'Authorization: Bearer your_admin_token' \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"alice","note":"team-a"}'
+docker compose exec codex-gateway python manage.py usage
 ```
 
-### 查看用户列表
+会看到：
 
-```bash
-curl http://127.0.0.1:8080/admin/users \
-  -H 'Authorization: Bearer your_admin_token'
-```
-
-### 创建 API Key
-
-```bash
-curl -X POST http://127.0.0.1:8080/admin/keys \
-  -H 'Authorization: Bearer your_admin_token' \
-  -H 'Content-Type: application/json' \
-  -d '{"user_id":1,"name":"alice-dev"}'
-```
-
-### 查看 API Keys
-
-```bash
-curl http://127.0.0.1:8080/admin/keys \
-  -H 'Authorization: Bearer your_admin_token'
-```
-
-### 禁用 Key
-
-```bash
-curl -X POST http://127.0.0.1:8080/admin/keys/1/disable \
-  -H 'Authorization: Bearer your_admin_token'
-```
-
-### 启用 Key
-
-```bash
-curl -X POST http://127.0.0.1:8080/admin/keys/1/enable \
-  -H 'Authorization: Bearer your_admin_token'
-```
-
-### 删除 Key
-
-```bash
-curl -X DELETE http://127.0.0.1:8080/admin/keys/1 \
-  -H 'Authorization: Bearer your_admin_token'
-```
-
-### 查看 token 汇总
-
-```bash
-curl http://127.0.0.1:8080/admin/usage/summary \
-  -H 'Authorization: Bearer your_admin_token'
-```
+- 每个 key 的 request_count
+- prompt_tokens
+- completion_tokens
+- total_tokens
+- 总汇总 totals
 
 ---
 
-## 10. 调用模型示例
+## 10. 拿新 API Key 怎么调用模型
 
-### `/v1/chat/completions`
+假设你刚拿到：
+
+```text
+gtw_xxxxxxxxx
+```
+
+那么调用方式是：
 
 ```bash
 curl http://127.0.0.1:8080/v1/chat/completions \
@@ -469,166 +303,171 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
     "model": "gpt-4.1-mini",
-    "messages": [{"role": "user", "content": "hello"}]
+    "messages": [
+      {"role": "user", "content": "hello"}
+    ]
   }'
 ```
 
-### `/v1/responses`
+这里的 `gtw_xxxxxxxxx` 就是你发给下游脚本 / 用户的 Gateway API Key。
+
+他们**不需要知道 `ADMIN_TOKEN`**。
+
+---
+
+## 11. Docker / Compose 用法
+
+### 11.1 首次启动
 
 ```bash
-curl http://127.0.0.1:8080/v1/responses \
-  -H 'Authorization: Bearer gtw_xxxxxxxxx' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "gpt-4.1-mini",
-    "input": "hello"
-  }'
+cd /home/ubuntu/codex-gateway-python
+cp .env.docker.example .env
+docker compose up -d --build
 ```
 
-### `/v1/embeddings`
+### 11.2 重启
 
 ```bash
-curl http://127.0.0.1:8080/v1/embeddings \
-  -H 'Authorization: Bearer gtw_xxxxxxxxx' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "text-embedding-3-small",
-    "input": "hello world"
-  }'
+docker compose down
+docker compose up -d --build
+```
+
+### 11.3 看日志
+
+```bash
+docker compose logs -f
 ```
 
 ---
 
-## 11. 数据持久化
+## 12. `.env` 最关键的配置
 
-当前默认数据库：
+### 如果你要走网页登录 OAuth
 
-```text
-sqlite+aiosqlite:///./data/gateway.db
+```env
+ADMIN_TOKEN=你自己生成的随机字符串
+UPSTREAM_AUTH_MODE=oauth_manual
+OAUTH_AUTHORIZE_URL=
+OAUTH_TOKEN_URL=
+OAUTH_CLIENT_ID=
+OAUTH_REDIRECT_URI=http://localhost/callback
 ```
 
-主要表：
+### 如果你暂时只想先跑通，不管网页登录
 
-- `users`
-- `api_keys`
-- `usage_logs`
-- `oauth_sessions`
-- `upstream_credentials`
+```env
+ADMIN_TOKEN=你自己生成的随机字符串
+UPSTREAM_AUTH_MODE=env_token
+UPSTREAM_BEARER_TOKEN=你的上游token
+```
 
-SQLite 适合：
-- 单机部署
-- 小团队内部使用
-- MVP / 原型阶段
-
-如果后面你要更稳，我建议迁 PostgreSQL。
+这个模式最稳，也最容易先验证 Gateway 主体是否正常。
 
 ---
 
-## 12. 常见问题
+## 13. 常见问题
 
-### Q1：返回 `missing oauth config`
-说明 `.env` 里至少有这些没填：
+### Q1：`ADMIN_TOKEN` 从哪里来？
+你自己生成，自己写进 `.env`。
+
+可以直接生成：
+
+```bash
+python manage.py generate-admin-token
+```
+
+### Q2：如果我都用 `manage.py` 了，还需要 `ADMIN_TOKEN` 吗？
+`manage.py` 本地直连数据库和业务逻辑，**平时你自己管理时其实不依赖 HTTP 鉴权**。
+
+但服务端的管理接口仍然需要 `ADMIN_TOKEN`，因为那是给 HTTP 管理接口做保护用的。
+
+所以：
+- **你本地用 `manage.py` 时，几乎不用关心它**
+- **服务本身仍然应该配置它**
+
+### Q3：`auth-start` 报 `missing oauth config`
+说明 `.env` 里这些至少有空的：
 
 - `OAUTH_AUTHORIZE_URL`
 - `OAUTH_TOKEN_URL`
 - `OAUTH_CLIENT_ID`
 - `OAUTH_REDIRECT_URI`
 
-### Q2：返回 `oauth state mismatch`
-说明你提交回来的 callback URL 不是同一次会话的结果，或者手工复制错了。
+### Q4：`auth-complete` 报 `oauth state mismatch`
+说明你粘回来的 callback URL 不是同一次登录会话的结果，或者复制错了。
 
-### Q3：返回 `oauth session expired`
-默认 OAuth session 15 分钟过期，重新发起一次即可。
+### Q5：`create-key` 成功，但模型调用失败
+通常是：
 
-### Q4：返回 `no active oauth credential; start login first`
-说明还没完成 OAuth 登录，或者已被 logout 清掉。
+- 上游还没登录成功
+- 上游 token 无效
+- model 名称不对
+- 上游接口本身报错
 
-### Q5：容器里 healthcheck 失败
-先检查服务本身是否起来：
-
-```bash
-docker logs -f codex-gateway-python
-```
-
-然后在宿主机测：
+先执行：
 
 ```bash
-curl http://127.0.0.1:8080/healthz
+docker compose exec codex-gateway python manage.py auth-status
 ```
 
-### Q6：为什么我没有把 OpenAI/Codex OAuth endpoint 写死？
-因为我没找到官方公开、稳定、明确允许第三方服务端直接复用的完整参数文档。硬写死一套来源不稳的参数，后面更容易炸。
-
-所以这版是：
-
-- 标准 OAuth 2.0 + PKCE 框架已经完整
-- 只等你补真实参数
+看上游凭证是否真的存在。
 
 ---
 
-## 13. 生产建议
+## 14. 我建议你现在就这样做
 
-如果你认真上线，我建议：
+按顺序执行：
 
-- 前面放 Nginx / Caddy
-- 只暴露内网 / VPN
-- 配 HTTPS
-- `ADMIN_TOKEN` 放强随机值
-- 给 `data/` 目录做备份
-- 日志接集中平台
-- 后续迁移到 PostgreSQL
-- 上游凭证做加密存储
+```bash
+cd /home/ubuntu/codex-gateway-python
+```
+
+### 先看状态
+
+```bash
+docker compose exec codex-gateway python manage.py doctor
+```
+
+### 如果 OAuth 参数已经填好，就登录
+
+```bash
+docker compose exec codex-gateway python manage.py auth-start
+```
+
+然后浏览器登录，再执行：
+
+```bash
+docker compose exec codex-gateway python manage.py auth-complete --session-id 1 --callback-url "你的完整回调URL"
+```
+
+### 然后创建用户
+
+```bash
+docker compose exec codex-gateway python manage.py create-user alice --note "team-a"
+```
+
+### 创建 key
+
+```bash
+docker compose exec codex-gateway python manage.py create-key --user-id 1 --name alice-dev
+```
+
+### 查看状态和统计
+
+```bash
+docker compose exec codex-gateway python manage.py auth-status
+docker compose exec codex-gateway python manage.py usage
+```
 
 ---
 
-## 14. 当前限制
+## 15. 后续建议
 
-这版是可运行的 MVP，不是假文档，但也不是最终完整版。
+接下来最值得补的不是更多 curl 示例，而是：
 
-还没做：
+1. 管理后台 Web UI
+2. 上游凭证加密存储
+3. SSE 流式代理
+4. per-key 配额 / 限流
 
-- 凭证明文加密存储
-- 流式 SSE 转发
-- per-key 额度 / 限流
-- 多上游账号切换
-- 管理后台前端
-- PostgreSQL / Alembic
-
----
-
-## 15. 快速命令汇总
-
-### 本地启动
-
-```bash
-cp .env.example .env
-pip install -r requirements.txt
-python -m app.main
-```
-
-### Docker 启动
-
-```bash
-cp .env.docker.example .env
-docker build -t codex-gateway-python:latest .
-docker run -d --name codex-gateway-python --restart unless-stopped --env-file .env -p 8080:8080 -v $(pwd)/data:/app/data codex-gateway-python:latest
-```
-
-### Compose 启动
-
-```bash
-cp .env.docker.example .env
-docker compose up -d --build
-```
-
-### 看日志
-
-```bash
-docker logs -f codex-gateway-python
-```
-
-### 健康检查
-
-```bash
-curl http://127.0.0.1:8080/healthz
-```
+但至少现在，`manage.py` 这一层已经把“手敲 curl 很烦”这件事解决掉了。
