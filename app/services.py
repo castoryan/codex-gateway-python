@@ -163,8 +163,8 @@ def build_codex_request_body(path: str, payload: dict[str, Any]) -> dict[str, An
     return body
 
 
-def extract_sse_json(text: str) -> dict[str, Any] | None:
-    candidates: list[dict[str, Any]] = []
+def parse_sse_events(text: str) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
     for chunk in text.split('\n\n'):
         lines = [line[5:].strip() for line in chunk.splitlines() if line.startswith('data:')]
         if not lines:
@@ -177,14 +177,43 @@ def extract_sse_json(text: str) -> dict[str, Any] | None:
         except Exception:
             continue
         if isinstance(obj, dict):
-            candidates.append(obj)
+            events.append(obj)
+    return events
+
+
+def extract_sse_json(text: str) -> dict[str, Any] | None:
+    candidates = parse_sse_events(text)
+    aggregated_text_parts: list[str] = []
+    for obj in candidates:
+        event_type = obj.get('type')
+        if event_type in ('response.output_text.delta', 'response.refusal.delta'):
+            delta = obj.get('delta')
+            if isinstance(delta, str) and delta:
+                aggregated_text_parts.append(delta)
+        elif event_type == 'response.output_item.done':
+            item = obj.get('item')
+            if isinstance(item, dict) and item.get('type') == 'message':
+                for content in item.get('content', []) or []:
+                    if isinstance(content, dict):
+                        if content.get('type') == 'output_text' and isinstance(content.get('text'), str):
+                            aggregated_text_parts.append(content['text'])
+                        elif content.get('type') == 'refusal' and isinstance(content.get('refusal'), str):
+                            aggregated_text_parts.append(content['refusal'])
     for obj in reversed(candidates):
         event_type = obj.get('type')
         if event_type in ('response.completed', 'response.done') and isinstance(obj.get('response'), dict):
-            return obj['response']
+            response = dict(obj['response'])
+            if aggregated_text_parts and not response.get('output_text'):
+                response['output_text'] = ''.join(aggregated_text_parts)
+            return response
     for obj in reversed(candidates):
         if isinstance(obj, dict) and ('output' in obj or 'output_text' in obj or 'usage' in obj):
-            return obj
+            response = dict(obj)
+            if aggregated_text_parts and not response.get('output_text'):
+                response['output_text'] = ''.join(aggregated_text_parts)
+            return response
+    if aggregated_text_parts:
+        return {'output_text': ''.join(aggregated_text_parts)}
     return None
 
 
@@ -327,6 +356,7 @@ async def forward_to_upstream(path: str, payload: dict[str, Any], db: AsyncSessi
         content_type=content_type,
         response_preview=raw_text[:2000],
         parsed_keys=list(data.keys()) if isinstance(data, dict) else None,
+        output_text_preview=(data.get('output_text')[:200] if isinstance(data, dict) and isinstance(data.get('output_text'), str) else None),
     )
 
     if resp.status_code >= 400:
