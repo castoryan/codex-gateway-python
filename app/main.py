@@ -300,5 +300,16 @@ async def proxy_embeddings(
     return await handle_proxy('/v1/embeddings', request, api_key, db)
 
 
+@app.post('/v1/models')
+async def proxy_models_post():
+    raise HTTPException(status_code=405, detail='use GET /v1/models')
+
+
+@app.get('/v1/models')
+async def list_models(api_key: ApiKey = Depends(require_api_key)):
+    items = [{'id': m, 'object': 'model'} for m in settings.allowed_models]
+    return {'object': 'list', 'data': items}
+
+
 if __name__ == '__main__':
     uvicorn.run('app.main:app', host=settings.host, port=settings.port, reload=False)

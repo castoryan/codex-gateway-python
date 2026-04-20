@@ -13,10 +13,12 @@ class Settings(BaseSettings):
     admin_token: str = Field(default='change_me_admin_token', alias='ADMIN_TOKEN')
     database_url: str = Field(default='sqlite+aiosqlite:///./data/gateway.db', alias='DATABASE_URL')
 
-    upstream_base_url: str = Field(default='https://api.openai.com', alias='UPSTREAM_BASE_URL')
-    upstream_auth_mode: str = Field(default='auto', alias='UPSTREAM_AUTH_MODE')
+    upstream_base_url: str = Field(default='https://chatgpt.com/backend-api', alias='UPSTREAM_BASE_URL')
+    upstream_auth_mode: str = Field(default='oauth_manual', alias='UPSTREAM_AUTH_MODE')
     upstream_bearer_token: str = Field(default='', alias='UPSTREAM_BEARER_TOKEN')
     upstream_timeout_seconds: int = Field(default=120, alias='UPSTREAM_TIMEOUT_SECONDS')
+    upstream_transport: str = Field(default='sse', alias='UPSTREAM_TRANSPORT')
+    upstream_openai_beta: str = Field(default='responses=experimental', alias='UPSTREAM_OPENAI_BETA')
     default_allowed_models: str = Field(default='', alias='DEFAULT_ALLOWED_MODELS')
 
     oauth_authorize_url: str = Field(default='https://auth.openai.com/oauth/authorize', alias='OAUTH_AUTHORIZE_URL')

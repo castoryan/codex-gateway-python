@@ -3,6 +3,7 @@
 一个偏实用主义的 Python Gateway，目标是：
 
 - 用一个上游 Codex / OpenAI 账号统一出网
+- 默认按 OpenClaw 同款走 ChatGPT Codex backend：`https://chatgpt.com/backend-api/codex/responses`
 - 给多个用户签发独立 API Key
 - 支持 API Key 创建 / 删除 / 启停 / token 统计
 - 支持 **OpenClaw 风格手动 OAuth 登录**
@@ -370,6 +371,21 @@ OAUTH_CODEX_CLI_SIMPLIFIED_FLOW=true
 OAUTH_ID_TOKEN_ADD_ORGANIZATIONS=true
 ```
 
+### 上游默认请求层
+
+这版现在默认不再把 OAuth 登录态转发到 `api.openai.com/v1/chat/completions`，而是改成更接近 OpenClaw 的上游：
+
+```text
+POST https://chatgpt.com/backend-api/codex/responses
+```
+
+并自动带上这些关键头：
+
+- `Authorization: Bearer <oauth access token>`
+- `chatgpt-account-id: <从token里提取>`
+- `OpenAI-Beta: responses=experimental`
+- `originator: pi`
+
 ### 如果你暂时只想先跑通，不管网页登录
 
 ```env
@@ -378,7 +394,7 @@ UPSTREAM_AUTH_MODE=env_token
 UPSTREAM_BEARER_TOKEN=你的上游token
 ```
 
-这个模式最稳，也最容易先验证 Gateway 主体是否正常。
+注意：`env_token` 更适合标准 OpenAI API Key 路线；而你现在如果想复用 Codex / ChatGPT OAuth 登录态，就应该保留 `oauth_manual`。
 
 ---
 
