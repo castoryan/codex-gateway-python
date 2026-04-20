@@ -19,7 +19,8 @@ class Settings(BaseSettings):
     upstream_timeout_seconds: int = Field(default=120, alias='UPSTREAM_TIMEOUT_SECONDS')
     upstream_transport: str = Field(default='sse', alias='UPSTREAM_TRANSPORT')
     upstream_openai_beta: str = Field(default='responses=experimental', alias='UPSTREAM_OPENAI_BETA')
-    default_allowed_models: str = Field(default='', alias='DEFAULT_ALLOWED_MODELS')
+    default_instructions: str = Field(default='You are a helpful assistant.', alias='DEFAULT_INSTRUCTIONS')
+    default_allowed_models: str = Field(default='gpt-5.4,gpt-5.3,gpt-5.1-codex-mini,gpt-5.3-codex', alias='DEFAULT_ALLOWED_MODELS')
 
     oauth_authorize_url: str = Field(default='https://auth.openai.com/oauth/authorize', alias='OAUTH_AUTHORIZE_URL')
     oauth_token_url: str = Field(default='https://auth.openai.com/oauth/token', alias='OAUTH_TOKEN_URL')

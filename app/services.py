@@ -139,8 +139,7 @@ def build_codex_request_body(path: str, payload: dict[str, Any]) -> dict[str, An
         messages = payload.get('messages') or []
         input_items, system_prompt = _convert_messages_to_input(messages)
         body['input'] = input_items
-        if system_prompt:
-            body['instructions'] = system_prompt
+        body['instructions'] = system_prompt or settings.default_instructions
     elif path == '/v1/responses':
         input_value = payload.get('input')
         if isinstance(input_value, str):
@@ -149,8 +148,7 @@ def build_codex_request_body(path: str, payload: dict[str, Any]) -> dict[str, An
             body['input'] = input_value
         else:
             body['input'] = []
-        if payload.get('instructions'):
-            body['instructions'] = payload.get('instructions')
+        body['instructions'] = payload.get('instructions') or settings.default_instructions
     else:
         raise HTTPException(status_code=400, detail=f'unsupported codex backend path: {path}')
 
@@ -197,12 +195,19 @@ def normalize_codex_response_to_chat(data: dict[str, Any], model: str) -> dict[s
         for item in data.get('output', []) or []:
             if not isinstance(item, dict):
                 continue
-            for content in item.get('content', []) or []:
-                if isinstance(content, dict):
-                    text = content.get('text') or content.get('output_text')
-                    if text:
-                        parts.append(text)
+            if item.get('type') == 'message':
+                for content in item.get('content', []) or []:
+                    if isinstance(content, dict):
+                        text = content.get('text') or content.get('output_text')
+                        if text:
+                            parts.append(text)
+            elif item.get('type') in ('output_text', 'text'):
+                text = item.get('text') or item.get('output_text')
+                if text:
+                    parts.append(text)
         output_text = ''.join(parts)
+    if not output_text and isinstance(data.get('error'), dict):
+        output_text = data['error'].get('message', '')
 
     usage = data.get('usage') or {}
     prompt_tokens = int(usage.get('input_tokens') or usage.get('prompt_tokens') or 0)
