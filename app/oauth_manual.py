@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -15,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import OAuthSession, UpstreamCredential
+
+JWT_CLAIM_PATH = 'https://api.openai.com/auth'
 
 
 @dataclass
@@ -31,7 +34,7 @@ def _b64url(data: bytes) -> str:
 def make_pkce_bundle() -> PkceBundle:
     verifier = _b64url(secrets.token_bytes(48))
     challenge = _b64url(hashlib.sha256(verifier.encode('utf-8')).digest())
-    state = secrets.token_urlsafe(24)
+    state = secrets.token_hex(16)
     return PkceBundle(verifier=verifier, challenge=challenge, state=state)
 
 
@@ -63,9 +66,14 @@ def build_authorize_url(bundle: PkceBundle) -> str:
         'state': bundle.state,
         'code_challenge': bundle.challenge,
         'code_challenge_method': 'S256',
+        'originator': settings.oauth_originator,
     }
     if settings.oauth_audience:
         params['audience'] = settings.oauth_audience
+    if settings.oauth_id_token_add_organizations:
+        params['id_token_add_organizations'] = 'true'
+    if settings.oauth_codex_cli_simplified_flow:
+        params['codex_cli_simplified_flow'] = 'true'
     return f"{settings.oauth_authorize_url}?{urlencode(params)}"
 
 
@@ -105,6 +113,35 @@ def parse_callback_url(callback_url: str) -> dict[str, str]:
     return flat
 
 
+def _decode_jwt_payload(access_token: str) -> dict[str, Any] | None:
+    try:
+        parts = access_token.split('.')
+        if len(parts) != 3:
+            return None
+        payload = parts[1]
+        padding = '=' * (-len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload + padding).decode('utf-8')
+        obj = json.loads(decoded)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+
+def extract_account_id(access_token: str, token_data: dict[str, Any]) -> str | None:
+    direct = token_data.get('account_id') or token_data.get('sub')
+    if isinstance(direct, str) and direct:
+        return direct
+    payload = _decode_jwt_payload(access_token)
+    if not payload:
+        return None
+    auth_claim = payload.get(JWT_CLAIM_PATH)
+    if isinstance(auth_claim, dict):
+        account_id = auth_claim.get('chatgpt_account_id')
+        if isinstance(account_id, str) and account_id:
+            return account_id
+    return None
+
+
 async def complete_oauth_session(db: AsyncSession, session_id: int, callback_url: str) -> dict[str, Any]:
     entity = await db.get(OAuthSession, session_id)
     if not entity:
@@ -125,9 +162,12 @@ async def complete_oauth_session(db: AsyncSession, session_id: int, callback_url
     refresh_token = token_data.get('refresh_token')
     if not access_token:
         raise HTTPException(status_code=502, detail='token endpoint did not return access_token')
+    if not refresh_token:
+        raise HTTPException(status_code=502, detail='token endpoint did not return refresh_token')
 
     expires_in = int(token_data.get('expires_in') or 3600)
     expires_at = _now() + timedelta(seconds=expires_in)
+    account_id = extract_account_id(access_token, token_data)
 
     existing = await db.execute(select(UpstreamCredential).where(UpstreamCredential.provider == 'codex').order_by(UpstreamCredential.id.desc()))
     current = existing.scalars().first()
@@ -141,8 +181,8 @@ async def complete_oauth_session(db: AsyncSession, session_id: int, callback_url
     current.token_type = token_data.get('token_type', 'Bearer')
     current.scope = token_data.get('scope')
     current.expires_at = expires_at
-    current.account_id = token_data.get('account_id') or token_data.get('sub')
-    current.raw_json = str(token_data)
+    current.account_id = account_id
+    current.raw_json = json.dumps(token_data, ensure_ascii=False)
     current.updated_at = _now()
 
     entity.status = 'completed'
@@ -158,6 +198,7 @@ async def complete_oauth_session(db: AsyncSession, session_id: int, callback_url
         'expires_at': expires_at.isoformat() + 'Z',
         'token_type': current.token_type,
         'scope': current.scope,
+        'account_id': current.account_id,
     }
 
 
@@ -211,7 +252,8 @@ async def refresh_upstream_credential(db: AsyncSession, credential: UpstreamCred
     credential.token_type = data.get('token_type', credential.token_type or 'Bearer')
     credential.scope = data.get('scope') or credential.scope
     credential.expires_at = _now() + timedelta(seconds=int(data.get('expires_in') or 3600))
-    credential.raw_json = str(data)
+    credential.account_id = extract_account_id(credential.access_token, data) or credential.account_id
+    credential.raw_json = json.dumps(data, ensure_ascii=False)
     credential.updated_at = _now()
     await db.commit()
     await db.refresh(credential)

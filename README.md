@@ -138,7 +138,20 @@ OAUTH_CLIENT_ID=...
 OAUTH_REDIRECT_URI=http://localhost/callback
 ```
 
-如果这些没填，`auth-start` 会失败。
+这版已经默认内置了与 OpenClaw 相同的 Codex OAuth 常量：
+
+```env
+OAUTH_AUTHORIZE_URL=https://auth.openai.com/oauth/authorize
+OAUTH_TOKEN_URL=https://auth.openai.com/oauth/token
+OAUTH_CLIENT_ID=app_EMoamEEZ73f0CkXaXp7hrann
+OAUTH_REDIRECT_URI=http://localhost:1455/auth/callback
+OAUTH_SCOPE=openid profile email offline_access
+OAUTH_ORIGINATOR=pi
+OAUTH_CODEX_CLI_SIMPLIFIED_FLOW=true
+OAUTH_ID_TOKEN_ADD_ORGANIZATIONS=true
+```
+
+所以通常你不需要再自己查这几个值了，保持默认即可。
 
 ### 5.1 发起登录
 
@@ -347,10 +360,14 @@ docker compose logs -f
 ```env
 ADMIN_TOKEN=你自己生成的随机字符串
 UPSTREAM_AUTH_MODE=oauth_manual
-OAUTH_AUTHORIZE_URL=
-OAUTH_TOKEN_URL=
-OAUTH_CLIENT_ID=
-OAUTH_REDIRECT_URI=http://localhost/callback
+OAUTH_AUTHORIZE_URL=https://auth.openai.com/oauth/authorize
+OAUTH_TOKEN_URL=https://auth.openai.com/oauth/token
+OAUTH_CLIENT_ID=app_EMoamEEZ73f0CkXaXp7hrann
+OAUTH_REDIRECT_URI=http://localhost:1455/auth/callback
+OAUTH_SCOPE=openid profile email offline_access
+OAUTH_ORIGINATOR=pi
+OAUTH_CODEX_CLI_SIMPLIFIED_FLOW=true
+OAUTH_ID_TOKEN_ADD_ORGANIZATIONS=true
 ```
 
 ### 如果你暂时只想先跑通，不管网页登录
