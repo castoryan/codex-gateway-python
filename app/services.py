@@ -115,11 +115,33 @@ def _convert_messages_to_input(messages: list[dict[str, Any]]) -> tuple[list[dic
             if text:
                 system_prompt = f"{system_prompt}\n{text}".strip() if system_prompt else text
             continue
+
+        if role == 'assistant':
+            assistant_parts = []
+            if isinstance(content, str):
+                assistant_parts = [{'type': 'output_text', 'text': content, 'annotations': []}]
+            elif isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    block_type = block.get('type')
+                    if block_type in ('text', 'output_text', 'input_text'):
+                        text = block.get('text') or block.get('content') or ''
+                        if text:
+                            assistant_parts.append({'type': 'output_text', 'text': text, 'annotations': []})
+            if assistant_parts:
+                items.append({
+                    'type': 'message',
+                    'role': 'assistant',
+                    'status': 'completed',
+                    'content': assistant_parts,
+                })
+            continue
+
         parts = _convert_content_to_parts(content)
         if not parts:
             continue
-        normalized_role = role if role in ('user', 'assistant') else 'user'
-        items.append({'role': normalized_role, 'content': parts})
+        items.append({'role': 'user', 'content': parts})
     return items, system_prompt
 
 
