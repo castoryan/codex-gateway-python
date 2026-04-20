@@ -205,37 +205,39 @@ def parse_sse_events(text: str) -> list[dict[str, Any]]:
 
 def extract_sse_json(text: str) -> dict[str, Any] | None:
     candidates = parse_sse_events(text)
-    aggregated_text_parts: list[str] = []
+    delta_text_parts: list[str] = []
+    done_text_parts: list[str] = []
     for obj in candidates:
         event_type = obj.get('type')
         if event_type in ('response.output_text.delta', 'response.refusal.delta'):
             delta = obj.get('delta')
             if isinstance(delta, str) and delta:
-                aggregated_text_parts.append(delta)
+                delta_text_parts.append(delta)
         elif event_type == 'response.output_item.done':
             item = obj.get('item')
             if isinstance(item, dict) and item.get('type') == 'message':
                 for content in item.get('content', []) or []:
                     if isinstance(content, dict):
                         if content.get('type') == 'output_text' and isinstance(content.get('text'), str):
-                            aggregated_text_parts.append(content['text'])
+                            done_text_parts.append(content['text'])
                         elif content.get('type') == 'refusal' and isinstance(content.get('refusal'), str):
-                            aggregated_text_parts.append(content['refusal'])
+                            done_text_parts.append(content['refusal'])
+    aggregated_text = ''.join(delta_text_parts) if delta_text_parts else ''.join(done_text_parts)
     for obj in reversed(candidates):
         event_type = obj.get('type')
         if event_type in ('response.completed', 'response.done') and isinstance(obj.get('response'), dict):
             response = dict(obj['response'])
-            if aggregated_text_parts and not response.get('output_text'):
-                response['output_text'] = ''.join(aggregated_text_parts)
+            if aggregated_text and not response.get('output_text'):
+                response['output_text'] = aggregated_text
             return response
     for obj in reversed(candidates):
         if isinstance(obj, dict) and ('output' in obj or 'output_text' in obj or 'usage' in obj):
             response = dict(obj)
-            if aggregated_text_parts and not response.get('output_text'):
-                response['output_text'] = ''.join(aggregated_text_parts)
+            if aggregated_text and not response.get('output_text'):
+                response['output_text'] = aggregated_text
             return response
-    if aggregated_text_parts:
-        return {'output_text': ''.join(aggregated_text_parts)}
+    if aggregated_text:
+        return {'output_text': aggregated_text}
     return None
 
 
