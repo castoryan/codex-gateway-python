@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from typing import Any
 
 import httpx
@@ -10,11 +11,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.codex_auth import CodexAuthError, codex_auth_manager
 from app.config import settings
-from app.models import ApiKey, UsageLog, UpstreamCredential
+from app.models import ApiKey, UsageLog
 from app.oauth_manual import get_active_upstream_credential
 
 JWT_CLAIM_PATH = 'https://api.openai.com/auth'
-CODEX_TOOL_CALL_PROVIDERS = {'openai', 'openai-codex', 'opencode'}
+
+
+def log_debug(event: str, **kwargs: Any) -> None:
+    payload = {'event': event, **kwargs}
+    try:
+        print(json.dumps(payload, ensure_ascii=False, default=str), flush=True)
+    except Exception:
+        print(str(payload), flush=True)
 
 
 async def resolve_upstream_credential(db: AsyncSession | None = None) -> tuple[str, str | None]:
@@ -79,26 +87,40 @@ def extract_account_id_from_token(access_token: str) -> str | None:
     return None
 
 
-def _convert_messages_to_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _convert_content_to_parts(content: Any) -> list[dict[str, Any]]:
+    if isinstance(content, str):
+        return [{'type': 'input_text', 'text': content}]
+    parts: list[dict[str, Any]] = []
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get('type')
+            if block_type in ('text', 'input_text', 'output_text'):
+                text = block.get('text') or block.get('content') or ''
+                if text:
+                    parts.append({'type': 'input_text', 'text': text})
+    return parts
+
+
+def _convert_messages_to_input(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
     items: list[dict[str, Any]] = []
+    system_prompt: str | None = None
     for msg in messages:
         role = msg.get('role')
         content = msg.get('content')
-        if isinstance(content, str):
-            parts = [{'type': 'input_text', 'text': content}]
-        elif isinstance(content, list):
-            parts = []
-            for block in content:
-                if isinstance(block, dict) and block.get('type') in ('text', 'input_text'):
-                    text = block.get('text') or block.get('content') or ''
-                    if text:
-                        parts.append({'type': 'input_text', 'text': text})
-        else:
-            parts = []
+        if role in ('system', 'developer'):
+            parts = _convert_content_to_parts(content)
+            text = '\n'.join(p['text'] for p in parts if p.get('text'))
+            if text:
+                system_prompt = f"{system_prompt}\n{text}".strip() if system_prompt else text
+            continue
+        parts = _convert_content_to_parts(content)
         if not parts:
             continue
-        items.append({'role': role or 'user', 'content': parts})
-    return items
+        normalized_role = role if role in ('user', 'assistant') else 'user'
+        items.append({'role': normalized_role, 'content': parts})
+    return items, system_prompt
 
 
 def build_codex_request_body(path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -106,7 +128,7 @@ def build_codex_request_body(path: str, payload: dict[str, Any]) -> dict[str, An
     body: dict[str, Any] = {
         'model': model,
         'store': False,
-        'stream': False,
+        'stream': True,
         'text': {'verbosity': 'medium'},
         'include': ['reasoning.encrypted_content'],
         'tool_choice': 'auto',
@@ -115,14 +137,18 @@ def build_codex_request_body(path: str, payload: dict[str, Any]) -> dict[str, An
 
     if path == '/v1/chat/completions':
         messages = payload.get('messages') or []
-        body['input'] = _convert_messages_to_input(messages)
+        input_items, system_prompt = _convert_messages_to_input(messages)
+        body['input'] = input_items
+        if system_prompt:
+            body['instructions'] = system_prompt
     elif path == '/v1/responses':
-        if 'input' in payload:
-            input_value = payload.get('input')
-            if isinstance(input_value, str):
-                body['input'] = [{'role': 'user', 'content': [{'type': 'input_text', 'text': input_value}]}]
-            else:
-                body['input'] = input_value
+        input_value = payload.get('input')
+        if isinstance(input_value, str):
+            body['input'] = [{'role': 'user', 'content': [{'type': 'input_text', 'text': input_value}]}]
+        elif isinstance(input_value, list):
+            body['input'] = input_value
+        else:
+            body['input'] = []
         if payload.get('instructions'):
             body['instructions'] = payload.get('instructions')
     else:
@@ -130,7 +156,38 @@ def build_codex_request_body(path: str, payload: dict[str, Any]) -> dict[str, An
 
     if payload.get('temperature') is not None:
         body['temperature'] = payload.get('temperature')
+    if payload.get('max_output_tokens') is not None:
+        body['max_output_tokens'] = payload.get('max_output_tokens')
+    if payload.get('reasoning') is not None:
+        body['reasoning'] = payload.get('reasoning')
+    if payload.get('metadata') is not None:
+        body['metadata'] = payload.get('metadata')
     return body
+
+
+def extract_sse_json(text: str) -> dict[str, Any] | None:
+    candidates: list[dict[str, Any]] = []
+    for chunk in text.split('\n\n'):
+        lines = [line[5:].strip() for line in chunk.splitlines() if line.startswith('data:')]
+        if not lines:
+            continue
+        data = '\n'.join(lines).strip()
+        if not data or data == '[DONE]':
+            continue
+        try:
+            obj = json.loads(data)
+        except Exception:
+            continue
+        if isinstance(obj, dict):
+            candidates.append(obj)
+    for obj in reversed(candidates):
+        event_type = obj.get('type')
+        if event_type in ('response.completed', 'response.done') and isinstance(obj.get('response'), dict):
+            return obj['response']
+    for obj in reversed(candidates):
+        if isinstance(obj, dict) and ('output' in obj or 'output_text' in obj or 'usage' in obj):
+            return obj
+    return None
 
 
 def normalize_codex_response_to_chat(data: dict[str, Any], model: str) -> dict[str, Any]:
@@ -155,7 +212,7 @@ def normalize_codex_response_to_chat(data: dict[str, Any], model: str) -> dict[s
     return {
         'id': data.get('id', 'codex_response'),
         'object': 'chat.completion',
-        'created': data.get('created_at') or 0,
+        'created': int(time.time()),
         'model': model,
         'choices': [{
             'index': 0,
@@ -205,18 +262,67 @@ async def forward_to_upstream(path: str, payload: dict[str, Any], db: AsyncSessi
         'OpenAI-Beta': settings.upstream_openai_beta,
         'originator': settings.oauth_originator,
         'User-Agent': 'pi (linux x86_64)',
-        'accept': 'application/json, text/event-stream',
+        'accept': 'text/event-stream',
         'content-type': 'application/json',
     }
+
+    log_debug(
+        'upstream_request',
+        target='codex_backend',
+        path=path,
+        url=url,
+        model=payload.get('model'),
+        account_id=account_id,
+        request_body=codex_body,
+        headers={
+            'chatgpt-account-id': account_id,
+            'OpenAI-Beta': settings.upstream_openai_beta,
+            'originator': settings.oauth_originator,
+            'accept': headers['accept'],
+            'content-type': headers['content-type'],
+        },
+    )
 
     async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
         resp = await client.post(url, headers=headers, json=codex_body)
 
     req_id = resp.headers.get('x-request-id') or resp.headers.get('openai-request-id')
+    raw_text = resp.text
+    content_type = resp.headers.get('content-type', '')
+
+    data: dict[str, Any]
+    parsed = None
     try:
-        data = resp.json()
+        parsed = resp.json()
     except Exception:
-        data = {'error': {'message': resp.text}}
+        parsed = None
+
+    if isinstance(parsed, dict):
+        data = parsed
+    else:
+        sse_obj = extract_sse_json(raw_text)
+        if isinstance(sse_obj, dict):
+            data = sse_obj
+        else:
+            data = {
+                'error': {
+                    'message': raw_text[:2000],
+                    'content_type': content_type,
+                    'status_code': resp.status_code,
+                }
+            }
+
+    log_debug(
+        'upstream_response',
+        target='codex_backend',
+        path=path,
+        url=url,
+        status_code=resp.status_code,
+        request_id=req_id,
+        content_type=content_type,
+        response_preview=raw_text[:2000],
+        parsed_keys=list(data.keys()) if isinstance(data, dict) else None,
+    )
 
     if resp.status_code >= 400:
         return resp.status_code, data, req_id
@@ -249,7 +355,11 @@ async def record_usage(
 
     error_message = None
     if status_code >= 400:
-        error_message = ((response_json.get('error') or {}).get('message')) if isinstance(response_json, dict) else None
+        error = response_json.get('error') if isinstance(response_json, dict) else None
+        if isinstance(error, dict):
+            error_message = error.get('message') or json.dumps(error, ensure_ascii=False)
+        else:
+            error_message = str(error) if error else None
 
     db.add(UsageLog(
         api_key_id=api_key.id,
